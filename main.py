@@ -663,7 +663,12 @@ async def on_shutdown():
     await application.bot.delete_webhook()
     await application.shutdown()
     logger.info("Webhook deleted and application shut down")
-
+    
+@app.get("/")
+async def root():
+    logger.info("Received GET request to root endpoint")
+    return {"message": "This is the QSWAPCommunityBot webhook server. Use /webhook for Telegram updates."}
+    
 # FastAPI webhook endpoint
 @app.post("/webhook")
 async def webhook(request: Request):
@@ -722,3 +727,4 @@ if __name__ == "__main__":
     finally:
         loop.run_until_complete(loop.shutdown_asyncgens())
         loop.close()
+
