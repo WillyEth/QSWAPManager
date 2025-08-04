@@ -5,6 +5,7 @@ import traceback
 from telegram import Update, Bot
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from telegram.constants import ParseMode
+from telegram.error import BadRequest
 from datetime import datetime, timedelta
 import uuid
 import mimetypes
@@ -24,7 +25,7 @@ logger = logging.getLogger(__name__)
 # Validate environment variables at startup
 bot_token = os.getenv("BOT_TOKEN")
 webhook_url = os.getenv("WEBHOOK_URL")
-port = os.getenv("PORT", "8443")  # Default to 8443 for webhook
+port = os.getenv("PORT", "8443")
 
 if not bot_token:
     logger.error("BOT_TOKEN environment variable not set or empty.")
@@ -55,6 +56,15 @@ job_lock = Lock()
 
 # Initialize application
 application = Application.builder().token(bot_token).build()
+
+# Enhanced MarkdownV2 escaping
+def escape_markdown_v2(text):
+    if not isinstance(text, str):
+        text = str(text)
+    special_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
+    for char in special_chars:
+        text = text.replace(char, f'\\{char}')
+    return text
 
 # Load group data from JSON
 def load_group_data():
@@ -99,18 +109,11 @@ async def check_admin_permissions(chat_id, bot: Bot):
 
 # Validate message text length
 def validate_message_text(text):
-    if len(text) > 4096:  # Telegram's message limit
+    if len(text) > 4096:
         return False, "Message text too long (max 4096 characters)"
     if not text.strip():
         return False, "Message text cannot be empty"
     return True, None
-
-# Escape MarkdownV2 special characters
-def escape_markdown_v2(text):
-    special_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
-    for char in special_chars:
-        text = text.replace(char, f'\\{char}')
-    return text
 
 # Help command: List all commands with descriptions
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -187,7 +190,7 @@ async def add_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    if interval > 10080:  # 1 week in minutes
+    if interval > 10080:
         await update.message.reply_text(
             escape_markdown_v2("❌ Interval cannot exceed 1 week (10080 minutes)"),
             parse_mode=ParseMode.MARKDOWN_V2
@@ -274,7 +277,7 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if update.message.photo:
         file = await update.message.photo[-1].get_file()
-        file_ext = ".jpg"  # Telegram photos are typically JPEG
+        file_ext = ".jpg"
         file_size = update.message.photo[-1].file_size
     elif update.message.video:
         file = await update.message.video.get_file()
@@ -289,7 +292,6 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Check file size (Telegram limit is 20MB for bots)
     if file_size and file_size > 20 * 1024 * 1024:
         await update.message.reply_text(
             escape_markdown_v2("❌ File too large. Maximum size is 20MB."),
@@ -305,7 +307,6 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
             escape_markdown_v2("⏳ Downloading media..."),
             parse_mode=ParseMode.MARKDOWN_V2
         )
-        # Download file using python-telegram-bot's method
         await file.download_to_drive(file_path)
     except Exception as e:
         logger.error(f"Error downloading file for chat {chat_id}: {e}")
@@ -353,7 +354,6 @@ async def list_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     response += "🗑️ To delete: /deletemessage <number>"
 
-    # Split long messages
     if len(response) > 4096:
         parts = [response[i:i + 4000] for i in range(0, len(response), 4000)]
         for part in parts:
@@ -384,7 +384,6 @@ async def delete_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if 0 <= index < len(group_data[chat_id]["messages"]):
         deleted_message = group_data[chat_id]["messages"].pop(index)
 
-        # Clean up media file
         if deleted_message["media"] and os.path.exists(deleted_message["media"]):
             try:
                 os.remove(deleted_message["media"])
@@ -394,7 +393,6 @@ async def delete_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         save_group_data(group_data)
 
-        # Remove associated job
         scheduler = context.bot_data.get('scheduler')
         job_id = f"{chat_id}_{index}"
         if scheduler and scheduler.get_job(job_id):
@@ -478,22 +476,31 @@ async def next_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"   ⚠️ No active job (restarting job...)\n"
                 f"   🔄 Interval: {msg['interval_minutes']} minutes\n\n"
             )
-            # Restart job if missing
             await start_posting_job(chat_id, context.bot, msg["interval_minutes"], i)
 
-    # Split long messages
-    if len(response) > 4096:
-        parts = [response[i:i + 4000] for i in range(0, len(response), 4000)]
-        for part in parts:
+    try:
+        if len(response) > 4096:
+            parts = [response[i:i + 4000] for i in range(0, len(response), 4000)]
+            for part in parts:
+                await update.message.reply_text(
+                    escape_markdown_v2(part),
+                    parse_mode=ParseMode.MARKDOWN_V2
+                )
+        else:
             await update.message.reply_text(
-                escape_markdown_v2(part),
+                escape_markdown_v2(response),
                 parse_mode=ParseMode.MARKDOWN_V2
             )
-    else:
-        await update.message.reply_text(
-            escape_markdown_v2(response),
-            parse_mode=ParseMode.MARKDOWN_V2
-        )
+    except BadRequest as e:
+        logger.error(f"Markdown parsing error in next_post: {str(e)}\n{traceback.format_exc()}")
+        # Fallback to plain text
+        response = response.replace('\\', '')
+        if len(response) > 4096:
+            parts = [response[i:i + 4000] for i in range(0, len(response), 4000)]
+            for part in parts:
+                await update.message.reply_text(part)
+        else:
+            await update.message.reply_text(response)
 
 # Test post a specific message
 async def test_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -616,7 +623,7 @@ async def start_posting_job(chat_id: str, bot: Bot, interval: int, message_index
 async def initialize_application():
     logger.info("Starting application initialization")
     max_retries = 5
-    retry_delay = 5  # seconds
+    retry_delay = 5
     for attempt in range(max_retries):
         try:
             logger.info(f"Attempting to initialize application (attempt {attempt + 1}/{max_retries})")
@@ -631,7 +638,6 @@ async def initialize_application():
             else:
                 logger.error("Max retries reached. Initialization failed.")
                 raise
-    # Initialize scheduler
     try:
         logger.info("Initializing scheduler")
         scheduler = AsyncIOScheduler()
@@ -641,7 +647,6 @@ async def initialize_application():
     except Exception as e:
         logger.error(f"Failed to start scheduler: {str(e)}\n{traceback.format_exc()}")
         raise
-    # Reload jobs from group_data.json
     try:
         logger.info("Reloading jobs from group_data.json")
         group_data = load_group_data()
@@ -651,7 +656,6 @@ async def initialize_application():
         logger.info("Reloaded jobs from group_data.json")
     except Exception as e:
         logger.error(f"Failed to reload jobs: {str(e)}\n{traceback.format_exc()}")
-    # Set webhook
     try:
         logger.info(f"Setting webhook to {webhook_url}")
         await application.bot.set_webhook(webhook_url, max_connections=40)
@@ -662,12 +666,10 @@ async def initialize_application():
     logger.info("Application initialization completed")
 
 async def shutdown_application():
-    # Stop scheduler
     scheduler = application.bot_data.get('scheduler')
     if scheduler:
         scheduler.shutdown()
         logger.info("Scheduler shut down")
-    # Delete webhook and shutdown application
     try:
         await application.bot.delete_webhook()
         logger.info("Webhook deleted")
@@ -679,7 +681,6 @@ async def shutdown_application():
 # Webhook handler
 async def webhook_handler(request: web.Request):
     try:
-        # Check if application is initialized
         if not application.updater:
             logger.warning("Application not initialized, attempting to initialize...")
             max_retries = 5
@@ -698,19 +699,16 @@ async def webhook_handler(request: web.Request):
                     else:
                         logger.error("Max retries reached. Initialization failed in webhook.")
                         return web.Response(status=503, text="Application failed to initialize")
-        # Parse request data
         try:
             request_data = await request.json()
             logger.info(f"Received webhook update: {request_data}")
         except Exception as e:
             logger.error(f"Failed to parse webhook JSON: {str(e)}\n{traceback.format_exc()}")
             return web.Response(status=400, text="Invalid JSON data")
-        # Deserialize update
         update = Update.de_json(request_data, application.bot)
         if update is None:
             logger.error("Failed to deserialize update: Update object is None")
             return web.Response(status=400, text="Invalid update data")
-        # Process update
         await application.process_update(update)
         logger.info(f"Webhook update {update.update_id} processed successfully")
         return web.json_response({"status": "ok"})
@@ -725,7 +723,6 @@ async def root_handler(request: web.Request):
 
 # Main application
 async def main():
-    # Register handlers
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("addmessage", add_message))
@@ -738,14 +735,12 @@ async def main():
     application.add_handler(CommandHandler("nextpost", next_post))
     application.add_handler(CommandHandler("testpost", test_post))
 
-    # Initialize application
     try:
         await initialize_application()
     except Exception as e:
         logger.error(f"Initialization failed: {str(e)}\n{traceback.format_exc()}")
         raise
 
-    # Setup aiohttp server
     app = web.Application()
     app.router.add_get("/", root_handler)
     app.router.add_post("/webhook", webhook_handler)
@@ -757,7 +752,6 @@ async def main():
     logger.info(f"Webhook server started on port {port}")
 
     try:
-        # Keep the server running
         while True:
             await asyncio.sleep(3600)
     except asyncio.CancelledError:
