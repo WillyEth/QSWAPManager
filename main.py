@@ -44,9 +44,10 @@ if webhook_url.startswith("http://localhost"):
 # Log environment variables
 logger.info(f"Environment Variables: BOT_TOKEN={bot_token[:5]}...{bot_token[-5:]}, WEBHOOK_URL={webhook_url}, PORT={port}")
 
-# File and directory constants
-DATA_FILE = "group_data.json"
-MEDIA_DIR = "media"
+ 
+# File and directory constants for persistent disk
+DATA_FILE = "/var/data/group_data.json"
+MEDIA_DIR = "/var/data/media"
 
 # Ensure media directory exists
 os.makedirs(MEDIA_DIR, exist_ok=True)
@@ -764,3 +765,4 @@ if __name__ == "__main__":
     except (KeyboardInterrupt, SystemExit):
         logger.info("Shutting down application")
         asyncio.run(shutdown_application())
+
