@@ -670,20 +670,40 @@ async def root():
     return {"message": "This is the QSWAPCommunityBot webhook server. Use /webhook for Telegram updates."}
     
 # FastAPI webhook endpoint
+
 @app.post("/webhook")
 async def webhook(request: Request):
+    client_ip = request.client.host
+    allowed_ranges = ["149.154.160.0/20", "91.108.4.0/22"]
+    if not any(ipaddress.ip_address(client_ip) in ipaddress.ip_network(cidr) for cidr in allowed_ranges):
+        logger.warning(f"Unauthorized access from {client_ip}")
+        raise HTTPException(status_code=403, detail="Unauthorized IP")
     try:
-        if not application.updater:  # Check if application is initialized
+        if not application.updater:
             logger.warning("Application not initialized yet, returning 503")
             raise HTTPException(status_code=503, detail="Application is initializing, please try again later")
-        
-        update = await request.json()
-        update = Update.de_json(update, application.bot)
+        # Log raw request data
+        try:
+            request_data = await request.json()
+            logger.info(f"Received webhook update: {request_data}")
+        except Exception as e:
+            logger.error(f"Failed to parse request JSON: {str(e)}\n{traceback.format_exc()}")
+            raise HTTPException(status_code=400, detail="Invalid JSON data")
+        # Deserialize update
+        update = Update.de_json(request_data, application.bot)
+        if update is None:
+            logger.error("Failed to deserialize update: Update object is None")
+            raise HTTPException(status_code=400, detail="Invalid update data")
+        # Process update
         await application.process_update(update)
+        logger.info("Webhook update processed successfully")
         return {"status": "ok"}
     except Exception as e:
-        logger.error(f"Error processing webhook update: {str(e)}")
+        logger.error(f"Error processing webhook update: {str(e)}\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+
 
 # Main application
 async def main():
@@ -727,4 +747,5 @@ if __name__ == "__main__":
     finally:
         loop.run_until_complete(loop.shutdown_asyncgens())
         loop.close()
+
 
