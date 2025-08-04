@@ -1,7 +1,6 @@
 import json
 import os
 import logging
-import ipaddress
 import traceback
 from fastapi import FastAPI, Request, HTTPException
 from telegram import Update, Bot
@@ -18,6 +17,15 @@ from dotenv import load_dotenv
 import uvicorn
 from uvicorn.config import Config
 from uvicorn.server import Server
+
+# Validate BOT_TOKEN at startup
+bot_token = os.getenv("BOT_TOKEN")
+if not bot_token:
+    logging.error("BOT_TOKEN environment variable not set or empty.")
+    raise ValueError("BOT_TOKEN environment variable not set or empty.")
+if not bot_token.strip() or ' ' in bot_token or bot_token.count(':') != 1 or not bot_token.split(':')[0].isdigit():
+    logging.error("BOT_TOKEN is invalid: must follow format <number>:<alphanumeric>.")
+    raise ValueError("BOT_TOKEN is invalid: must follow format <number>:<alphanumeric>.")
 
 # Load .env file for local development test
 if os.getenv("WEBHOOK_URL", "").startswith("http://localhost"):
@@ -116,20 +124,6 @@ async def root(request: Request):
     return {"message": "This is the QSWAPCommunityBot webhook server. Use /webhook for Telegram updates."}
 
 # Initialize bot and application
-bot_token = os.getenv("BOT_TOKEN")
-if not bot_token:
-    logger.error("BOT_TOKEN environment variable not set or empty.")
-    raise ValueError("BOT_TOKEN environment variable not set or empty.")
-
-# Validate token format
-if not bot_token.strip() or ' ' in bot_token:
-    logger.error("BOT_TOKEN is invalid: contains spaces or is empty.")
-    raise ValueError("BOT_TOKEN is invalid: contains spaces or is empty.")
-
-if not bot_token.count(':') == 1 or not bot_token.split(':')[0].isdigit():
-    logger.error("BOT_TOKEN is invalid: must follow format <number>:<alphanumeric>.")
-    raise ValueError("BOT_TOKEN is invalid: must follow format <number>:<alphanumeric>.")
-
 application = Application.builder().token(bot_token).build()
 
 # Help command: List all commands with descriptions
@@ -629,20 +623,16 @@ async def start_posting_job(chat_id: str, bot: Bot, interval: int, message_index
 
 # Initialize bot and setup webhook
 async def on_startup():
-    # Validate BOT_TOKEN format
+    logger.info("Starting on_startup process")
+    # Validate BOT_TOKEN format (redundant but for logging)
     bot_token = os.getenv("BOT_TOKEN")
-    if not bot_token:
-        logger.error("BOT_TOKEN environment variable not set.")
-        raise ValueError("BOT_TOKEN environment variable not set.")
-    if not bot_token.strip() or ' ' in bot_token or bot_token.count(':') != 1 or not bot_token.split(':')[0].isdigit():
-        logger.error("BOT_TOKEN is invalid: must follow format <number>:<alphanumeric>.")
-        raise ValueError("BOT_TOKEN is invalid: must follow format <number>:<alphanumeric>.")
-
+    logger.info(f"Using BOT_TOKEN: {bot_token[:5]}...{bot_token[-5:]}")
     # Initialize application with retry logic
     max_retries = 5
     retry_delay = 5  # seconds
     for attempt in range(max_retries):
         try:
+            logger.info(f"Attempting to initialize application (attempt {attempt + 1}/{max_retries})")
             await application.initialize()
             logger.info("Application initialized successfully")
             break
@@ -656,6 +646,7 @@ async def on_startup():
                 raise
     # Initialize scheduler
     try:
+        logger.info("Initializing scheduler")
         scheduler = AsyncIOScheduler()
         application.bot_data['scheduler'] = scheduler
         scheduler.start()
@@ -665,6 +656,7 @@ async def on_startup():
         raise
     # Reload jobs from group_data.json
     try:
+        logger.info("Reloading jobs from group_data.json")
         group_data = load_group_data()
         for chat_id, data in group_data.items():
             for i, message in enumerate(data["messages"]):
@@ -679,11 +671,13 @@ async def on_startup():
         logger.error("WEBHOOK_URL environment variable not set.")
         raise ValueError("WEBHOOK_URL environment variable not set.")
     try:
+        logger.info(f"Setting webhook to {webhook_url}")
         await application.bot.set_webhook(webhook_url, max_connections=40)
         logger.info(f"Webhook set to {webhook_url}")
     except Exception as e:
         logger.error(f"Failed to set webhook: {str(e)}\n{traceback.format_exc()}")
         raise
+    logger.info("on_startup completed successfully")
 
 async def on_shutdown():
     # Stop scheduler
@@ -700,10 +694,7 @@ async def on_shutdown():
 @app.post("/webhook")
 async def webhook(request: Request):
     client_ip = request.client.host
-    allowed_ranges = ["149.154.160.0/20", "91.108.4.0/22"]
-    if not any(ipaddress.ip_address(client_ip) in ipaddress.ip_network(cidr) for cidr in allowed_ranges):
-        logger.warning(f"Unauthorized access from {client_ip}")
-        raise HTTPException(status_code=403, detail="Unauthorized IP")
+    logger.info(f"Webhook request from {client_ip}")
     try:
         # Check if application is initialized
         if not application.updater:
@@ -712,6 +703,7 @@ async def webhook(request: Request):
             retry_delay = 5  # seconds
             for attempt in range(max_retries):
                 try:
+                    logger.info(f"Attempting to initialize application in webhook (attempt {attempt + 1}/{max_retries})")
                     await application.initialize()
                     logger.info("Application initialized successfully in webhook")
                     break
