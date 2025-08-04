@@ -22,7 +22,6 @@ if os.getenv("WEBHOOK_URL", "").startswith("http://localhost"):
     load_dotenv()
 
 # Configure logging
-
 def configure_logging():
     enable_logging = os.getenv("ENABLE_LOGGING", "true").lower() == "true"
     log_level = logging.INFO if enable_logging else logging.WARNING
@@ -32,7 +31,6 @@ def configure_logging():
 
 logger = configure_logging()
 
-
 # Log environment variables
 def log_env_variables():
     bot_token = os.getenv("BOT_TOKEN")
@@ -40,7 +38,6 @@ def log_env_variables():
     port = os.getenv("PORT", "8000")
     masked_token = f"{bot_token[:5]}...{bot_token[-5:]}" if bot_token else "Not set"
     logger.info(f"Environment Variables: BOT_TOKEN={masked_token}, WEBHOOK_URL={webhook_url}, PORT={port}")
-
 
 # File and directory constants
 DATA_FILE = "group_data.json"
@@ -51,7 +48,6 @@ os.makedirs(MEDIA_DIR, exist_ok=True)
 
 # Thread lock for job queue operations
 job_lock = Lock()
-
 
 # Load group data from JSON
 def load_group_data():
@@ -67,7 +63,6 @@ def load_group_data():
             return {}
     return {}
 
-
 # Save group data to JSON
 def save_group_data(data):
     try:
@@ -76,7 +71,6 @@ def save_group_data(data):
     except Exception as e:
         logger.error(f"Error saving group_data.json: {e}")
 
-
 # Ensure group is initialized
 def ensure_group_initialized(chat_id, group_data):
     chat_id = str(chat_id)
@@ -84,7 +78,6 @@ def ensure_group_initialized(chat_id, group_data):
         group_data[chat_id] = {"messages": [], "pending_message": None}
         save_group_data(group_data)
     return group_data
-
 
 # Check if bot is admin
 async def check_admin_permissions(chat_id, bot: Bot):
@@ -95,7 +88,6 @@ async def check_admin_permissions(chat_id, bot: Bot):
         logger.error(f"Error checking admin status for chat {chat_id}: {e}")
         return False
 
-
 # Validate message text length
 def validate_message_text(text):
     if len(text) > 4096:  # Telegram's message limit
@@ -104,17 +96,12 @@ def validate_message_text(text):
         return False, "Message text cannot be empty"
     return True, None
 
-
-
-
 # Escape MarkdownV2 special characters
 def escape_markdown_v2(text):
     special_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
     for char in special_chars:
         text = text.replace(char, f'\\{char}')
     return text
-
-
 
 # FastAPI app
 app = FastAPI()
@@ -135,7 +122,6 @@ if not bot_token.count(':') == 1 or not bot_token.split(':')[0].isdigit():
     raise ValueError("BOT_TOKEN is invalid: must follow format <number>:<alphanumeric>.")
 
 application = Application.builder().token(bot_token).build()
-
 
 # Help command: List all commands with descriptions
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -164,7 +150,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode=ParseMode.MARKDOWN_V2
     )
 
-
 # Start command: Initialize group
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = str(update.effective_chat.id)
@@ -184,7 +169,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ),
         parse_mode=ParseMode.MARKDOWN_V2
     )
-
 
 # Add a message (prompt for media)
 async def add_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -249,7 +233,6 @@ async def add_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode=ParseMode.MARKDOWN_V2
     )
 
-
 # Cancel pending message (add as text-only)
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = str(update.effective_chat.id)
@@ -279,7 +262,6 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         escape_markdown_v2(f"✅ Text-only message added with {interval}-minute interval!"),
         parse_mode=ParseMode.MARKDOWN_V2
     )
-
 
 # Handle media uploads
 async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -357,7 +339,6 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode=ParseMode.MARKDOWN_V2
     )
 
-
 # List messages
 async def list_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = str(update.effective_chat.id)
@@ -395,7 +376,6 @@ async def list_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             escape_markdown_v2(response),
             parse_mode=ParseMode.MARKDOWN_V2
         )
-
 
 # Delete a message
 async def delete_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -440,7 +420,6 @@ async def delete_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN_V2
         )
 
-
 # Print JSON data
 async def print_json(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = str(update.effective_chat.id)
@@ -461,7 +440,6 @@ async def print_json(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode=ParseMode.MARKDOWN_V2
     )
 
-
 # Get chat ID
 async def get_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = str(update.effective_chat.id)
@@ -477,7 +455,6 @@ async def get_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ),
         parse_mode=ParseMode.MARKDOWN_V2
     )
-
 
 # Show next scheduled post times
 async def next_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -527,57 +504,6 @@ async def next_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN_V2
         )
 
-# Show next scheduled post times
-# Show next scheduled post times
-async def next_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = str(update.effective_chat.id)
-    group_data = ensure_group_initialized(chat_id, load_group_data())
-
-    if not group_data[chat_id]["messages"]:
-        await update.message.reply_text(
-            escape_markdown_v2("📝 No messages configured yet. Use /addmessage to add one!"),
-            parse_mode=ParseMode.MARKDOWN_V2
-        )
-        return
-
-    scheduler = context.bot_data.get('scheduler')
-    response = "📅 **Next Scheduled Posts:**\n\n"
-    for i, msg in enumerate(group_data[chat_id]["messages"]):
-        job_id = f"{chat_id}_{i}"
-        job = scheduler.get_job(job_id)
-        if job:
-            next_run = job.next_run_time
-            next_run_str = next_run.strftime("%Y-%m-%d %H:%M:%S %Z")
-            response += (
-                f"**Message {i + 1}:** {msg['text'][:50]}{'...' if len(msg['text']) > 50 else ''}\n"
-                f"   ⏰ Next run: {next_run_str}\n"
-                f"   🔄 Interval: {msg['interval_minutes']} minutes\n\n"
-            )
-        else:
-            response += (
-                f"**Message {i + 1}:** {msg['text'][:50]}{'...' if len(msg['text']) > 50 else ''}\n"
-                f"   ⚠️ No active job (restarting job...)\n"
-                f"   🔄 Interval: {msg['interval_minutes']} minutes\n\n"
-            )
-            # Restart job if missing
-            await start_posting_job(chat_id, context.bot, msg["interval_minutes"], i)
-
-    # Escape the entire response string
-    escaped_response = escape_markdown_v2(response)
-
-    # Split long messages
-    if len(escaped_response) > 4096:
-        parts = [escaped_response[i:i + 4000] for i in range(0, len(escaped_response), 4000)]
-        for part in parts:
-            await update.message.reply_text(
-                part,
-                parse_mode=ParseMode.MARKDOWN_V2
-            )
-    else:
-        await update.message.reply_text(
-            escaped_response,
-            parse_mode=ParseMode.MARKDOWN_V2
-        )
 # Test post a specific message
 async def test_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = str(update.effective_chat.id)
@@ -607,7 +533,6 @@ async def test_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
             escape_markdown_v2("❌ Invalid message number. Use /listmessages to see available messages."),
             parse_mode=ParseMode.MARKDOWN_V2
         )
-
 
 # Post message job
 async def post_message(bot: Bot, chat_id: str, message_index: int):
@@ -665,7 +590,6 @@ async def post_message(bot: Bot, chat_id: str, message_index: int):
     except Exception as e:
         logger.error(f"Failed to post message to chat {chat_id}, index {message_index}: {str(e)}")
 
-
 # Start posting job for a message
 async def start_posting_job(chat_id: str, bot: Bot, interval: int, message_index: int):
     group_data = load_group_data()
@@ -694,11 +618,15 @@ async def start_posting_job(chat_id: str, bot: Bot, interval: int, message_index
         logger.info(
             f"Scheduled job {job_id} for chat {chat_id}, message {message_index + 1}, interval {interval} minutes")
 
-
 # Initialize bot and setup webhook
 async def on_startup():
     # Initialize application
-    await application.initialize()
+    try:
+        await application.initialize()
+        logger.info("Application initialized successfully")
+    except Exception as e:
+        logger.error(f"Failed to initialize application: {str(e)}")
+        raise
 
     # Initialize scheduler
     scheduler = AsyncIOScheduler()
@@ -718,9 +646,12 @@ async def on_startup():
         logger.error("WEBHOOK_URL environment variable not set.")
         raise ValueError("WEBHOOK_URL environment variable not set.")
 
-    await application.bot.set_webhook(webhook_url)
-    logger.info(f"Webhook set to {webhook_url}")
-
+    try:
+        await application.bot.set_webhook(webhook_url)
+        logger.info(f"Webhook set to {webhook_url}")
+    except Exception as e:
+        logger.error(f"Failed to set webhook: {str(e)}")
+        raise
 
 async def on_shutdown():
     # Stop scheduler
@@ -733,19 +664,21 @@ async def on_shutdown():
     await application.shutdown()
     logger.info("Webhook deleted and application shut down")
 
-
 # FastAPI webhook endpoint
 @app.post("/webhook")
 async def webhook(request: Request):
     try:
+        if not application.updater:  # Check if application is initialized
+            logger.warning("Application not initialized yet, returning 503")
+            raise HTTPException(status_code=503, detail="Application is initializing, please try again later")
+        
         update = await request.json()
         update = Update.de_json(update, application.bot)
         await application.process_update(update)
         return {"status": "ok"}
     except Exception as e:
-        logger.error(f"Error processing webhook update: {e}")
+        logger.error(f"Error processing webhook update: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
-
 
 # Main application
 async def main():
@@ -765,8 +698,13 @@ async def main():
     application.add_handler(CommandHandler("nextpost", next_post))
     application.add_handler(CommandHandler("testpost", test_post))
 
-    # Run startup
-    await on_startup()
+    # Run startup with error handling
+    try:
+        await on_startup()
+        logger.info("Startup completed successfully")
+    except Exception as e:
+        logger.error(f"Startup failed: {str(e)}")
+        raise
 
     # Start FastAPI server
     host = "0.0.0.0"
@@ -774,7 +712,6 @@ async def main():
     config = Config(app=app, host=host, port=port)
     server = Server(config)
     await server.serve()
-
 
 if __name__ == "__main__":
     loop = asyncio.get_event_loop()
