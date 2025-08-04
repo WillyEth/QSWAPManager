@@ -348,26 +348,35 @@ async def list_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         media_info = "📷 Photo" if msg['media'] and msg['media'].endswith(('.jpg', '.jpeg', '.png')) else \
             "🎥 Video" if msg['media'] and msg['media'].endswith(('.mp4', '.gif')) else \
                 "📝 Text only"
-
-        response += (f"**{i + 1}.** {escape_markdown_v2(msg['text'][:50])}{'...' if len(msg['text']) > 50 else ''}\n"
-                     f"   📁 Media: {escape_markdown_v2(media_info)}\n"
+        response += (f"**{i + 1}.** {msg['text'][:50]}{'...' if len(msg['text']) > 50 else ''}\n"
+                     f"   📁 Media: {media_info}\n"
                      f"   ⏰ Interval: {msg['interval_minutes']} minutes\n\n")
-
     response += "🗑️ To delete: /deletemessage <number>"
 
-    if len(response) > 4096:
-        parts = [response[i:i + 4000] for i in range(0, len(response), 4000)]
-        for part in parts:
+    try:
+        logger.info(f"Sending list_messages response: {response}")  # Log the response for debugging
+        if len(response) > 4096:
+            parts = [response[i:i + 4000] for i in range(0, len(response), 4000)]
+            for part in parts:
+                await update.message.reply_text(
+                    escape_markdown_v2(part),
+                    parse_mode=ParseMode.MARKDOWN_V2
+                )
+        else:
             await update.message.reply_text(
-                escape_markdown_v2(part),
+                escape_markdown_v2(response),
                 parse_mode=ParseMode.MARKDOWN_V2
             )
-    else:
-        await update.message.reply_text(
-            escape_markdown_v2(response),
-            parse_mode=ParseMode.MARKDOWN_V2
-        )
-
+    except BadRequest as e:
+        logger.error(f"Markdown parsing error in list_messages: {str(e)}\nResponse: {response}\n{traceback.format_exc()}")
+        # Fallback to plain text
+        response = response.replace('\\', '')  # Remove escape characters for plain text
+        if len(response) > 4096:
+            parts = [response[i:i + 4000] for i in range(0, len(response), 4000)]
+            for part in parts:
+                await update.message.reply_text(part)
+        else:
+            await update.message.reply_text(response)
 # Delete a message
 async def delete_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = str(update.effective_chat.id)
@@ -765,4 +774,5 @@ if __name__ == "__main__":
     except (KeyboardInterrupt, SystemExit):
         logger.info("Shutting down application")
         asyncio.run(shutdown_application())
+
 
