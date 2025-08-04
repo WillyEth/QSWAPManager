@@ -2,7 +2,6 @@ import json
 import os
 import logging
 import traceback
-from fastapi import FastAPI, Request, HTTPException
 from telegram import Update, Bot
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from telegram.constants import ParseMode
@@ -10,44 +9,39 @@ from datetime import datetime, timedelta
 import uuid
 import mimetypes
 from threading import Lock
-from aiofiles import os as aio_os
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import asyncio
+from aiohttp import web
 from dotenv import load_dotenv
-import uvicorn
-from uvicorn.config import Config
-from uvicorn.server import Server
 
-# Validate BOT_TOKEN at startup
+# Configure logging before anything else
+logging.basicConfig(
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
+
+# Validate environment variables at startup
 bot_token = os.getenv("BOT_TOKEN")
+webhook_url = os.getenv("WEBHOOK_URL")
+port = os.getenv("PORT", "8443")  # Default to 8443 for webhook
+
 if not bot_token:
-    logging.error("BOT_TOKEN environment variable not set or empty.")
+    logger.error("BOT_TOKEN environment variable not set or empty.")
     raise ValueError("BOT_TOKEN environment variable not set or empty.")
 if not bot_token.strip() or ' ' in bot_token or bot_token.count(':') != 1 or not bot_token.split(':')[0].isdigit():
-    logging.error("BOT_TOKEN is invalid: must follow format <number>:<alphanumeric>.")
+    logger.error("BOT_TOKEN is invalid: must follow format <number>:<alphanumeric>.")
     raise ValueError("BOT_TOKEN is invalid: must follow format <number>:<alphanumeric>.")
+if not webhook_url:
+    logger.error("WEBHOOK_URL environment variable not set.")
+    raise ValueError("WEBHOOK_URL environment variable not set.")
 
-# Load .env file for local development test
-if os.getenv("WEBHOOK_URL", "").startswith("http://localhost"):
+# Load .env file for local development
+if webhook_url.startswith("http://localhost"):
     load_dotenv()
 
-# Configure logging
-def configure_logging():
-    enable_logging = os.getenv("ENABLE_LOGGING", "true").lower() == "true"
-    log_level = logging.INFO if enable_logging else logging.WARNING
-    logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=log_level)
-    logger = logging.getLogger(__name__)
-    return logger
-
-logger = configure_logging()
-
 # Log environment variables
-def log_env_variables():
-    bot_token = os.getenv("BOT_TOKEN")
-    webhook_url = os.getenv("WEBHOOK_URL")
-    port = os.getenv("PORT", "8000")
-    masked_token = f"{bot_token[:5]}...{bot_token[-5:]}" if bot_token else "Not set"
-    logger.info(f"Environment Variables: BOT_TOKEN={masked_token}, WEBHOOK_URL={webhook_url}, PORT={port}")
+logger.info(f"Environment Variables: BOT_TOKEN={bot_token[:5]}...{bot_token[-5:]}, WEBHOOK_URL={webhook_url}, PORT={port}")
 
 # File and directory constants
 DATA_FILE = "group_data.json"
@@ -58,6 +52,9 @@ os.makedirs(MEDIA_DIR, exist_ok=True)
 
 # Thread lock for job queue operations
 job_lock = Lock()
+
+# Initialize application
+application = Application.builder().token(bot_token).build()
 
 # Load group data from JSON
 def load_group_data():
@@ -71,6 +68,7 @@ def load_group_data():
         except Exception as e:
             logger.error(f"Unexpected error loading group_data.json: {e}")
             return {}
+    logger.info("group_data.json not found, starting with empty data")
     return {}
 
 # Save group data to JSON
@@ -78,6 +76,7 @@ def save_group_data(data):
     try:
         with open(DATA_FILE, "w", encoding='utf-8') as f:
             json.dump(data, f, indent=4, ensure_ascii=False)
+        logger.info("Saved group_data.json")
     except Exception as e:
         logger.error(f"Error saving group_data.json: {e}")
 
@@ -112,19 +111,6 @@ def escape_markdown_v2(text):
     for char in special_chars:
         text = text.replace(char, f'\\{char}')
     return text
-
-# FastAPI app
-app = FastAPI()
-
-# Add root endpoint to handle GET / requests
-@app.get("/")
-async def root(request: Request):
-    client_ip = request.client.host
-    logger.info(f"Received GET request to root endpoint from {client_ip}")
-    return {"message": "This is the QSWAPCommunityBot webhook server. Use /webhook for Telegram updates."}
-
-# Initialize bot and application
-application = Application.builder().token(bot_token).build()
 
 # Help command: List all commands with descriptions
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -319,6 +305,7 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
             escape_markdown_v2("⏳ Downloading media..."),
             parse_mode=ParseMode.MARKDOWN_V2
         )
+        # Download file using python-telegram-bot's method
         await file.download_to_drive(file_path)
     except Exception as e:
         logger.error(f"Error downloading file for chat {chat_id}: {e}")
@@ -400,7 +387,8 @@ async def delete_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Clean up media file
         if deleted_message["media"] and os.path.exists(deleted_message["media"]):
             try:
-                await aio_os.remove(deleted_message["media"])
+                os.remove(deleted_message["media"])
+                logger.info(f"Deleted media file {deleted_message['media']}")
             except Exception as e:
                 logger.error(f"Error deleting media file {deleted_message['media']}: {e}")
 
@@ -409,7 +397,7 @@ async def delete_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Remove associated job
         scheduler = context.bot_data.get('scheduler')
         job_id = f"{chat_id}_{index}"
-        if scheduler.get_job(job_id):
+        if scheduler and scheduler.get_job(job_id):
             scheduler.remove_job(job_id)
             logger.info(f"Removed job {job_id} for chat {chat_id}")
 
@@ -475,7 +463,7 @@ async def next_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
     response = "📅 **Next Scheduled Posts:**\n\n"
     for i, msg in enumerate(group_data[chat_id]["messages"]):
         job_id = f"{chat_id}_{i}"
-        job = scheduler.get_job(job_id)
+        job = scheduler.get_job(job_id) if scheduler else None
         if job:
             next_run = job.next_run_time
             next_run_str = next_run.strftime("%Y-%m-%d %H:%M:%S %Z")
@@ -606,6 +594,9 @@ async def start_posting_job(chat_id: str, bot: Bot, interval: int, message_index
 
     with job_lock:
         scheduler = application.bot_data.get('scheduler')
+        if not scheduler:
+            logger.error(f"Scheduler not initialized for chat {chat_id}")
+            return
         job_id = f"{chat_id}_{message_index}"
         if scheduler.get_job(job_id):
             scheduler.remove_job(job_id)
@@ -616,18 +607,14 @@ async def start_posting_job(chat_id: str, bot: Bot, interval: int, message_index
             minutes=interval,
             id=job_id,
             args=(bot, chat_id, message_index),
-            next_run_time=datetime.now() + timedelta(minutes=1)  # Start after 1 minute
+            next_run_time=datetime.now() + timedelta(minutes=1)
         )
         logger.info(
             f"Scheduled job {job_id} for chat {chat_id}, message {message_index + 1}, interval {interval} minutes")
 
 # Initialize bot and setup webhook
-async def on_startup():
-    logger.info("Starting on_startup process")
-    # Validate BOT_TOKEN format (redundant but for logging)
-    bot_token = os.getenv("BOT_TOKEN")
-    logger.info(f"Using BOT_TOKEN: {bot_token[:5]}...{bot_token[-5:]}")
-    # Initialize application with retry logic
+async def initialize_application():
+    logger.info("Starting application initialization")
     max_retries = 5
     retry_delay = 5  # seconds
     for attempt in range(max_retries):
@@ -664,12 +651,7 @@ async def on_startup():
         logger.info("Reloaded jobs from group_data.json")
     except Exception as e:
         logger.error(f"Failed to reload jobs: {str(e)}\n{traceback.format_exc()}")
-        # Continue even if job reloading fails, as it’s not critical
     # Set webhook
-    webhook_url = os.getenv("WEBHOOK_URL")
-    if not webhook_url:
-        logger.error("WEBHOOK_URL environment variable not set.")
-        raise ValueError("WEBHOOK_URL environment variable not set.")
     try:
         logger.info(f"Setting webhook to {webhook_url}")
         await application.bot.set_webhook(webhook_url, max_connections=40)
@@ -677,30 +659,31 @@ async def on_startup():
     except Exception as e:
         logger.error(f"Failed to set webhook: {str(e)}\n{traceback.format_exc()}")
         raise
-    logger.info("on_startup completed successfully")
+    logger.info("Application initialization completed")
 
-async def on_shutdown():
+async def shutdown_application():
     # Stop scheduler
     scheduler = application.bot_data.get('scheduler')
-    scheduler.shutdown()
-    logger.info("Scheduler shut down")
-
+    if scheduler:
+        scheduler.shutdown()
+        logger.info("Scheduler shut down")
     # Delete webhook and shutdown application
-    await application.bot.delete_webhook()
+    try:
+        await application.bot.delete_webhook()
+        logger.info("Webhook deleted")
+    except Exception as e:
+        logger.error(f"Failed to delete webhook: {str(e)}")
     await application.shutdown()
-    logger.info("Webhook deleted and application shut down")
+    logger.info("Application shut down")
 
-# FastAPI webhook endpoint
-@app.post("/webhook")
-async def webhook(request: Request):
-    client_ip = request.client.host
-    logger.info(f"Webhook request from {client_ip}")
+# Webhook handler
+async def webhook_handler(request: web.Request):
     try:
         # Check if application is initialized
         if not application.updater:
             logger.warning("Application not initialized, attempting to initialize...")
             max_retries = 5
-            retry_delay = 5  # seconds
+            retry_delay = 5
             for attempt in range(max_retries):
                 try:
                     logger.info(f"Attempting to initialize application in webhook (attempt {attempt + 1}/{max_retries})")
@@ -714,32 +697,34 @@ async def webhook(request: Request):
                         await asyncio.sleep(retry_delay)
                     else:
                         logger.error("Max retries reached. Initialization failed in webhook.")
-                        raise HTTPException(status_code=503, detail="Application failed to initialize, please try again later")
-        # Log raw request data
+                        return web.Response(status=503, text="Application failed to initialize")
+        # Parse request data
         try:
             request_data = await request.json()
-            logger.info(f"Received webhook update from {client_ip}: {request_data}")
+            logger.info(f"Received webhook update: {request_data}")
         except Exception as e:
-            logger.error(f"Failed to parse request JSON: {str(e)}\n{traceback.format_exc()}")
-            raise HTTPException(status_code=400, detail="Invalid JSON data")
+            logger.error(f"Failed to parse webhook JSON: {str(e)}\n{traceback.format_exc()}")
+            return web.Response(status=400, text="Invalid JSON data")
         # Deserialize update
         update = Update.de_json(request_data, application.bot)
         if update is None:
             logger.error("Failed to deserialize update: Update object is None")
-            raise HTTPException(status_code=400, detail="Invalid update data")
+            return web.Response(status=400, text="Invalid update data")
         # Process update
         await application.process_update(update)
         logger.info(f"Webhook update {update.update_id} processed successfully")
-        return {"status": "ok"}
+        return web.json_response({"status": "ok"})
     except Exception as e:
         logger.error(f"Error processing webhook update: {str(e)}\n{traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=str(e))
+        return web.Response(status=500, text=str(e))
+
+# Root endpoint for health checks
+async def root_handler(request: web.Request):
+    logger.info(f"Received GET request to root endpoint from {request.remote}")
+    return web.json_response({"message": "This is the QSWAPCommunityBot webhook server. Use /webhook for Telegram updates."})
 
 # Main application
 async def main():
-    # Log environment variables
-    log_env_variables()
-
     # Register handlers
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("start", start))
@@ -753,32 +738,35 @@ async def main():
     application.add_handler(CommandHandler("nextpost", next_post))
     application.add_handler(CommandHandler("testpost", test_post))
 
-    # Run startup with error handling
+    # Initialize application
     try:
-        await on_startup()
-        logger.info("Startup completed successfully")
+        await initialize_application()
     except Exception as e:
-        logger.error(f"Startup failed: {str(e)}\n{traceback.format_exc()}")
+        logger.error(f"Initialization failed: {str(e)}\n{traceback.format_exc()}")
         raise
 
-    # Start FastAPI server with error handling
-    host = "0.0.0.0"
-    port = int(os.getenv("PORT", 8000))
-    config = Config(app=app, host=host, port=port)
-    server = Server(config)
+    # Setup aiohttp server
+    app = web.Application()
+    app.router.add_get("/", root_handler)
+    app.router.add_post("/webhook", webhook_handler)
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', int(port))
+    await site.start()
+    logger.info(f"Webhook server started on port {port}")
+
     try:
-        await server.serve()
-    except Exception as e:
-        logger.error(f"Server error: {str(e)}\n{traceback.format_exc()}")
-        await on_shutdown()
-        raise
+        # Keep the server running
+        while True:
+            await asyncio.sleep(3600)
+    except asyncio.CancelledError:
+        await runner.cleanup()
+        await shutdown_application()
 
 if __name__ == "__main__":
-    loop = asyncio.get_event_loop()
     try:
-        loop.run_until_complete(main())
+        asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
-        loop.run_until_complete(on_shutdown())
-    finally:
-        loop.run_until_complete(loop.shutdown_asyncgens())
-        loop.close()
+        logger.info("Shutting down application")
+        asyncio.run(shutdown_application())
