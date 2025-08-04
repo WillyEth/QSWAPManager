@@ -1,6 +1,8 @@
 import json
 import os
 import logging
+import ipaddress  # Added to fix NameError
+import traceback  # Added for detailed error logging
 from fastapi import FastAPI, Request, HTTPException
 from telegram import Update, Bot
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
@@ -105,6 +107,13 @@ def escape_markdown_v2(text):
 
 # FastAPI app
 app = FastAPI()
+
+# Add root endpoint to handle GET / requests
+@app.get("/")
+async def root(request: Request):
+    client_ip = request.client.host
+    logger.info(f"Received GET request to root endpoint from {client_ip}")
+    return {"message": "This is the QSWAPCommunityBot webhook server. Use /webhook for Telegram updates."}
 
 # Initialize bot and application
 bot_token = os.getenv("BOT_TOKEN")
@@ -620,37 +629,51 @@ async def start_posting_job(chat_id: str, bot: Bot, interval: int, message_index
 
 # Initialize bot and setup webhook
 async def on_startup():
-    # Initialize application
-    try:
-        await application.initialize()
-        logger.info("Application initialized successfully")
-    except Exception as e:
-        logger.error(f"Failed to initialize application: {str(e)}")
-        raise
-
+    # Initialize application with retry logic
+    max_retries = 3
+    retry_delay = 5  # seconds
+    for attempt in range(max_retries):
+        try:
+            await application.initialize()
+            logger.info("Application initialized successfully")
+            break
+        except Exception as e:
+            logger.error(f"Attempt {attempt + 1}/{max_retries} - Failed to initialize application: {str(e)}\n{traceback.format_exc()}")
+            if attempt < max_retries - 1:
+                logger.info(f"Retrying initialization in {retry_delay} seconds...")
+                await asyncio.sleep(retry_delay)
+            else:
+                logger.error("Max retries reached. Initialization failed.")
+                raise
     # Initialize scheduler
-    scheduler = AsyncIOScheduler()
-    application.bot_data['scheduler'] = scheduler
-    scheduler.start()
-    logger.info("Scheduler started")
-
+    try:
+        scheduler = AsyncIOScheduler()
+        application.bot_data['scheduler'] = scheduler
+        scheduler.start()
+        logger.info("Scheduler started")
+    except Exception as e:
+        logger.error(f"Failed to start scheduler: {str(e)}\n{traceback.format_exc()}")
+        raise
     # Reload jobs from group_data.json
-    group_data = load_group_data()
-    for chat_id, data in group_data.items():
-        for i, message in enumerate(data["messages"]):
-            await start_posting_job(chat_id, application.bot, message["interval_minutes"], i)
-
+    try:
+        group_data = load_group_data()
+        for chat_id, data in group_data.items():
+            for i, message in enumerate(data["messages"]):
+                await start_posting_job(chat_id, application.bot, message["interval_minutes"], i)
+        logger.info("Reloaded jobs from group_data.json")
+    except Exception as e:
+        logger.error(f"Failed to reload jobs: {str(e)}\n{traceback.format_exc()}")
+        raise
     # Set webhook
     webhook_url = os.getenv("WEBHOOK_URL")
     if not webhook_url:
         logger.error("WEBHOOK_URL environment variable not set.")
         raise ValueError("WEBHOOK_URL environment variable not set.")
-
     try:
         await application.bot.set_webhook(webhook_url)
         logger.info(f"Webhook set to {webhook_url}")
     except Exception as e:
-        logger.error(f"Failed to set webhook: {str(e)}")
+        logger.error(f"Failed to set webhook: {str(e)}\n{traceback.format_exc()}")
         raise
 
 async def on_shutdown():
@@ -663,14 +686,8 @@ async def on_shutdown():
     await application.bot.delete_webhook()
     await application.shutdown()
     logger.info("Webhook deleted and application shut down")
-    
-@app.get("/")
-async def root():
-    logger.info("Received GET request to root endpoint")
-    return {"message": "This is the QSWAPCommunityBot webhook server. Use /webhook for Telegram updates."}
-    
-# FastAPI webhook endpoint
 
+# FastAPI webhook endpoint
 @app.post("/webhook")
 async def webhook(request: Request):
     client_ip = request.client.host
@@ -702,9 +719,6 @@ async def webhook(request: Request):
         logger.error(f"Error processing webhook update: {str(e)}\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
 
-
-
-
 # Main application
 async def main():
     # Log environment variables
@@ -728,7 +742,7 @@ async def main():
         await on_startup()
         logger.info("Startup completed successfully")
     except Exception as e:
-        logger.error(f"Startup failed: {str(e)}")
+        logger.error(f"Startup failed: {str(e)}\n{traceback.format_exc()}")
         raise
 
     # Start FastAPI server
@@ -747,5 +761,3 @@ if __name__ == "__main__":
     finally:
         loop.run_until_complete(loop.shutdown_asyncgens())
         loop.close()
-
-
