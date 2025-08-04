@@ -1,8 +1,8 @@
 import json
 import os
 import logging
-import ipaddress  # Added to fix NameError
-import traceback  # Added for detailed error logging
+import ipaddress
+import traceback
 from fastapi import FastAPI, Request, HTTPException
 from telegram import Update, Bot
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
@@ -629,8 +629,17 @@ async def start_posting_job(chat_id: str, bot: Bot, interval: int, message_index
 
 # Initialize bot and setup webhook
 async def on_startup():
+    # Validate BOT_TOKEN format
+    bot_token = os.getenv("BOT_TOKEN")
+    if not bot_token:
+        logger.error("BOT_TOKEN environment variable not set.")
+        raise ValueError("BOT_TOKEN environment variable not set.")
+    if not bot_token.strip() or ' ' in bot_token or bot_token.count(':') != 1 or not bot_token.split(':')[0].isdigit():
+        logger.error("BOT_TOKEN is invalid: must follow format <number>:<alphanumeric>.")
+        raise ValueError("BOT_TOKEN is invalid: must follow format <number>:<alphanumeric>.")
+
     # Initialize application with retry logic
-    max_retries = 3
+    max_retries = 5
     retry_delay = 5  # seconds
     for attempt in range(max_retries):
         try:
@@ -663,14 +672,14 @@ async def on_startup():
         logger.info("Reloaded jobs from group_data.json")
     except Exception as e:
         logger.error(f"Failed to reload jobs: {str(e)}\n{traceback.format_exc()}")
-        raise
+        # Continue even if job reloading fails, as it’s not critical
     # Set webhook
     webhook_url = os.getenv("WEBHOOK_URL")
     if not webhook_url:
         logger.error("WEBHOOK_URL environment variable not set.")
         raise ValueError("WEBHOOK_URL environment variable not set.")
     try:
-        await application.bot.set_webhook(webhook_url)
+        await application.bot.set_webhook(webhook_url, max_connections=40)
         logger.info(f"Webhook set to {webhook_url}")
     except Exception as e:
         logger.error(f"Failed to set webhook: {str(e)}\n{traceback.format_exc()}")
@@ -696,13 +705,28 @@ async def webhook(request: Request):
         logger.warning(f"Unauthorized access from {client_ip}")
         raise HTTPException(status_code=403, detail="Unauthorized IP")
     try:
+        # Check if application is initialized
         if not application.updater:
-            logger.warning("Application not initialized yet, returning 503")
-            raise HTTPException(status_code=503, detail="Application is initializing, please try again later")
+            logger.warning("Application not initialized, attempting to initialize...")
+            max_retries = 5
+            retry_delay = 5  # seconds
+            for attempt in range(max_retries):
+                try:
+                    await application.initialize()
+                    logger.info("Application initialized successfully in webhook")
+                    break
+                except Exception as e:
+                    logger.error(f"Attempt {attempt + 1}/{max_retries} - Failed to initialize application in webhook: {str(e)}\n{traceback.format_exc()}")
+                    if attempt < max_retries - 1:
+                        logger.info(f"Retrying initialization in {retry_delay} seconds...")
+                        await asyncio.sleep(retry_delay)
+                    else:
+                        logger.error("Max retries reached. Initialization failed in webhook.")
+                        raise HTTPException(status_code=503, detail="Application failed to initialize, please try again later")
         # Log raw request data
         try:
             request_data = await request.json()
-            logger.info(f"Received webhook update: {request_data}")
+            logger.info(f"Received webhook update from {client_ip}: {request_data}")
         except Exception as e:
             logger.error(f"Failed to parse request JSON: {str(e)}\n{traceback.format_exc()}")
             raise HTTPException(status_code=400, detail="Invalid JSON data")
@@ -713,7 +737,7 @@ async def webhook(request: Request):
             raise HTTPException(status_code=400, detail="Invalid update data")
         # Process update
         await application.process_update(update)
-        logger.info("Webhook update processed successfully")
+        logger.info(f"Webhook update {update.update_id} processed successfully")
         return {"status": "ok"}
     except Exception as e:
         logger.error(f"Error processing webhook update: {str(e)}\n{traceback.format_exc()}")
@@ -745,12 +769,17 @@ async def main():
         logger.error(f"Startup failed: {str(e)}\n{traceback.format_exc()}")
         raise
 
-    # Start FastAPI server
+    # Start FastAPI server with error handling
     host = "0.0.0.0"
     port = int(os.getenv("PORT", 8000))
     config = Config(app=app, host=host, port=port)
     server = Server(config)
-    await server.serve()
+    try:
+        await server.serve()
+    except Exception as e:
+        logger.error(f"Server error: {str(e)}\n{traceback.format_exc()}")
+        await on_shutdown()
+        raise
 
 if __name__ == "__main__":
     loop = asyncio.get_event_loop()
